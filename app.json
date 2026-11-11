@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "ReturnRadar",
+    "slug": "return-radar",
+    "scheme": "returnradar",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.jeet0740.returnradar",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Take a photo of a receipt to attach to a purchase.",
+        "NSPhotoLibraryUsageDescription": "Select receipt photos to save with your purchases."
+      }
+    },
+    "android": {
+      "package": "com.jeet0740.returnradar",
+      "permissions": [
+        "POST_NOTIFICATIONS"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow ReturnRadar to select receipt images.",
+          "cameraPermission": "Allow ReturnRadar to photograph receipts."
+        }
+      ],
+      "expo-notifications"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": ""
+      }
+    },
+    "experiments": {}
+  }
+}
