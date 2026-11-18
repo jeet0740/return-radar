@@ -28,7 +28,12 @@
           "cameraPermission": "Allow ReturnRadar to photograph receipts."
         }
       ],
-      "expo-notifications"
+      "expo-notifications",
+      "expo-sharing",
+      "expo-sqlite",
+      "expo-status-bar",
+      "expo-font"
     ]
   }
 }
+
