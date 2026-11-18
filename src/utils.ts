@@ -21,11 +21,20 @@ export function addDays(date: string, days: number): string {
   return toDateString(parsed);
 }
 
+// Calendar-day arithmetic avoids one-hour DST transitions affecting deadlines.
+function calendarDayNumber(date: Date): number {
+  return Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86400000);
+}
+
+export function daysBetweenDates(start: string, end: string): number {
+  const a = parseDate(start);
+  const b = parseDate(end);
+  if (!a || !b) return Number.POSITIVE_INFINITY;
+  return calendarDayNumber(b) - calendarDayNumber(a);
+}
+
 export function daysUntil(date: string): number {
-  const parsed = parseDate(date);
-  if (!parsed) return Number.POSITIVE_INFINITY;
-  const today = parseDate(dateToday())!;
-  return Math.round((parsed.getTime() - today.getTime()) / 86400000);
+  return daysBetweenDates(dateToday(), date);
 }
 
 export function displayDate(value: string): string {
