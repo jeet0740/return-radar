@@ -165,18 +165,40 @@ function AppContent() {
       setForm(prev => ({ ...prev, receiptUri: uri }));
       try {
         const result = await scanReceipt(uri);
-        setForm(prev => {
-          const next = { ...prev, receiptUri: uri };
-          if (result.store && !prev.store.trim()) next.store = result.store;
-          if (result.total !== null && !prev.price.trim()) next.price = result.total.toFixed(2);
-          if (result.date && (prev.purchaseDate === dateToday() || !prev.purchaseDate)) {
-            next.purchaseDate = result.date;
-            if (!prev.customDeadline) next.returnDeadline = addDays(result.date, Number(prev.returnDays) || 30);
-          }
-          return next;
-        });
         const fields = [result.store && 'store', result.total !== null && 'total', result.date && 'date'].filter(Boolean);
-        setScanMessage(fields.length ? `Detected ${fields.join(', ')}. Review the fields before saving.` : 'Receipt attached. No reliable details detected; enter them manually.');
+        if (fields.length === 0) {
+          setScanMessage('Receipt attached. No reliable details detected; enter them manually.');
+        } else {
+          setScanMessage(`Found ${fields.join(', ')}. Confirm the detected values to fill the form.`);
+          Alert.alert(
+            'Receipt details found',
+            `Store: ${result.store || 'Not found'}\nTotal: ${result.total !== null ? '$' + result.total.toFixed(2) : 'Not found'}\nDate: ${result.date || 'Not found'}\n\nApply these details to the purchase form?`,
+            [
+              { text: 'Keep current fields', style: 'cancel' },
+              {
+                text: 'Apply details',
+                onPress: () => {
+                  setForm(prev => {
+                    const next = { ...prev, receiptUri: uri };
+                    if (result.store) next.store = result.store;
+                    if (result.total !== null) next.price = result.total.toFixed(2);
+                    if (result.date) {
+                      next.purchaseDate = result.date;
+                      if (!prev.customDeadline) {
+                        const days = Number(prev.returnDays);
+                        if (Number.isInteger(days) && days >= 0 && days <= 3650) {
+                          next.returnDeadline = addDays(result.date, days);
+                        }
+                      }
+                    }
+                    return next;
+                  });
+                  setScanMessage('Scanned details applied. Review and correct them before saving.');
+                },
+              },
+            ],
+          );
+        }
       } catch (error) {
         setScanMessage('Receipt attached, but text recognition failed. You can enter details manually.');
         console.warn('Receipt OCR failed', error);
