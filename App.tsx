@@ -14,6 +14,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { listPurchases, removePurchase, savePurchase, setNotificationIds } from './src/database';
 import { cancelReminders, scheduleReminders, ensureNotificationPermission } from './src/reminders';
 import { acquireReceipt, deleteReceipt, ReceiptSource } from './src/receipt';
+import { scanReceipt } from './src/ocr';
 import { Purchase, PurchaseInput, PurchaseStatus } from './src/types';
 import { addDays, dateToday, daysUntil, deadlineLabel, displayDate, money, parseDate, purchaseUrgency } from './src/utils';
 
@@ -96,6 +97,8 @@ function AppContent() {
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [busy, setBusy] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanMessage, setScanMessage] = useState('');
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState<Purchase | null>(null);
   const [form, setForm] = useState<Form>(blank());
@@ -140,8 +143,8 @@ function AppContent() {
     {typeof count === 'number' ? <Text style={subtitle}>{count} items</Text> : null}
   </View>;
 
-  function openAdd() { setEditing(null); setForm(blank()); setModal(true); }
-  function openEdit(p: Purchase) { setDetail(null); setEditing(p); setForm(toForm(p)); setModal(true); }
+  function openAdd() { setEditing(null); setForm(blank()); setScanMessage(''); setModal(true); }
+  function openEdit(p: Purchase) { setDetail(null); setEditing(p); setForm(toForm(p)); setScanMessage(''); setModal(true); }
   function changeForm<K extends keyof Form>(key: K, value: Form[K]) {
     setForm(prev => {
       const next = { ...prev, [key]: value };
@@ -153,11 +156,36 @@ function AppContent() {
     });
   }
   async function photo(source: ReceiptSource) {
-    try { const uri = await acquireReceipt(source); if (uri) changeForm('receiptUri', uri); }
-    catch (e) { Alert.alert('Receipt unavailable', String(e)); }
+    if (scanning) return;
+    setScanning(true);
+    setScanMessage('Reading receipt on your iPhone…');
+    try {
+      const uri = await acquireReceipt(source);
+      if (!uri) { setScanMessage(''); return; }
+      setForm(prev => ({ ...prev, receiptUri: uri }));
+      try {
+        const result = await scanReceipt(uri);
+        setForm(prev => {
+          const next = { ...prev, receiptUri: uri };
+          if (result.store && !prev.store.trim()) next.store = result.store;
+          if (result.total !== null && !prev.price.trim()) next.price = result.total.toFixed(2);
+          if (result.date && (prev.purchaseDate === dateToday() || !prev.purchaseDate)) {
+            next.purchaseDate = result.date;
+            if (!prev.customDeadline) next.returnDeadline = addDays(result.date, Number(prev.returnDays) || 30);
+          }
+          return next;
+        });
+        const fields = [result.store && 'store', result.total !== null && 'total', result.date && 'date'].filter(Boolean);
+        setScanMessage(fields.length ? `Detected ${fields.join(', ')}. Review the fields before saving.` : 'Receipt attached. No reliable details detected; enter them manually.');
+      } catch (error) {
+        setScanMessage('Receipt attached, but text recognition failed. You can enter details manually.');
+        console.warn('Receipt OCR failed', error);
+      }
+    } catch (e) { Alert.alert('Receipt unavailable', String(e)); setScanMessage(''); }
+    finally { setScanning(false); }
   }
   function choosePhoto() {
-    Alert.alert('Add receipt', 'Attach a receipt image. Enter the purchase details manually.', [
+    Alert.alert('Scan receipt', 'Attach a receipt image and read its text on-device. Review all detected details.', [
       { text: 'Take photo', onPress: () => { void photo('camera'); } },
       { text: 'Choose photo', onPress: () => { void photo('library'); } },
       { text: 'Cancel', style: 'cancel' },
@@ -466,10 +494,12 @@ function AppContent() {
         </View>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingHorizontal: 22, paddingTop: 8, paddingBottom: 50 }}>
-            <Pressable onPress={choosePhoto} style={{ ...panel, padding: 18, alignItems: 'center', borderStyle: 'dashed', marginBottom: 22 }}>
+            <Pressable onPress={choosePhoto} disabled={scanning} style={{ ...panel, padding: 18, alignItems: 'center', borderStyle: 'dashed', marginBottom: 22, opacity: scanning ? 0.65 : 1 }}>
               {form.receiptUri ? <Image source={{ uri: form.receiptUri }} resizeMode="contain" style={{ width: '100%', height: 150, borderRadius: 12 }}/>: <IconBox name="camera-outline" size={29} tint={c.brand} background={c.muted}/>}
-              <Text style={{ color: c.text, fontWeight: '800', marginTop: 10 }}>{form.receiptUri ? 'Change receipt photo' : 'Add receipt photo'}</Text>
+              <Text style={{ color: c.text, fontWeight: '800', marginTop: 10 }}>{scanning ? 'Scanning receipt…' : form.receiptUri ? 'Scan another receipt' : 'Scan receipt'}</Text>
               <Text style={{ ...subtitle, textAlign: 'center', marginTop: 4 }}>Take a photo or choose from your library</Text>
+              {scanning ? <ActivityIndicator style={{ marginTop: 10 }} color={c.brand}/> : null}
+              {scanMessage ? <Text style={{ color: c.brand, marginTop: 9, textAlign: 'center', fontSize: 12 }}>{scanMessage}</Text> : null}
             </Pressable>
             <Field c={c} label="Product name *" placeholder="e.g. Wireless headphones" value={form.title} onChangeText={v => changeForm('title', v)}/>
             <Field c={c} label="Store *" placeholder="e.g. Best Buy" value={form.store} onChangeText={v => changeForm('store', v)}/>
@@ -485,7 +515,7 @@ function AppContent() {
             <Field c={c} label="Warranty expiration (optional)" placeholder="YYYY-MM-DD" value={form.warrantyDeadline} onChangeText={v => changeForm('warrantyDeadline', v)}/>
             <Field c={c} label="Notes (optional)" placeholder="Order number, conditions, etc." multiline value={form.notes} onChangeText={v => changeForm('notes', v)}/>
             <View style={{ marginTop: 6 }}>{actionButton(saving ? 'Saving…' : editing ? 'Save changes' : 'Save purchase', () => { void persist(); }, 'checkmark-circle-outline')}</View>
-            <Text style={{ ...subtitle, textAlign: 'center', marginTop: 14, lineHeight: 18 }}>Receipt image is saved locally. This version does not auto-read receipt text.</Text>
+            <Text style={{ ...subtitle, textAlign: 'center', marginTop: 14, lineHeight: 18 }}>Receipt text is recognized on your device. Check the detected store, total and date before saving. Return windows must be verified with the retailer.</Text>
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
