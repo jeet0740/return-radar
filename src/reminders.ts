@@ -31,14 +31,17 @@ export async function cancelReminders(ids: string[]): Promise<void> {
   }));
 }
 
-export async function scheduleReminders(purchase: Purchase): Promise<string[]> {
-  if (purchase.status !== 'active' || !purchase.returnDeadline) return [];
+export const DEFAULT_OFFSETS = [7, 3, 1, 0];
+export async function scheduleReminders(purchase: Purchase, offsets: number[] = DEFAULT_OFFSETS): Promise<string[]> {
+  if (purchase.status === 'returned') return [];
   if (!(await ensureNotificationPermission())) return [];
-  const parsed = parseDate(purchase.returnDeadline);
-  if (!parsed) return [];
   const ids: string[] = [];
-  for (const daysBefore of [7, 3, 1, 0]) {
-    if (daysUntil(purchase.returnDeadline) < daysBefore) continue;
+  const deadlines = [{ date: purchase.status === 'active' ? purchase.returnDeadline : '', label: 'Return deadline' }, { date: purchase.warrantyDeadline, label: 'Warranty expiration' }];
+  for (const deadline of deadlines) {
+  const parsed = parseDate(deadline.date);
+  if (!parsed) continue;
+  for (const daysBefore of offsets) {
+    if (daysUntil(deadline.date) < daysBefore) continue;
     const at = new Date(parsed);
     at.setDate(at.getDate() - daysBefore);
     at.setHours(9, 0, 0, 0);
@@ -46,8 +49,8 @@ export async function scheduleReminders(purchase: Purchase): Promise<string[]> {
     try {
       const id = await Notifications.scheduleNotificationAsync({
         content: {
-          title: daysBefore === 0 ? 'Return deadline is today' : 'Return deadline approaching',
-          body: `${purchase.title} at ${purchase.store} — ${daysBefore === 0 ? 'check your return options today' : `${daysBefore} day(s) remaining`}`,
+          title: deadline.label + (daysBefore === 0 ? ' is today' : ' approaching'),
+          body: `${purchase.title} at ${purchase.store} — ${daysBefore === 0 ? 'check your options today' : `${daysBefore} day(s) remaining`}`,
           data: { purchaseId: purchase.id },
           sound: true,
         },
@@ -58,5 +61,14 @@ export async function scheduleReminders(purchase: Purchase): Promise<string[]> {
       console.warn('Could not schedule a reminder', error);
     }
   }
+  }
   return ids;
+}
+
+export async function testReminder(): Promise<void> {
+  if (!(await ensureNotificationPermission())) throw new Error('Enable notifications in device Settings.');
+  await Notifications.scheduleNotificationAsync({
+    content: { title: 'ReturnRadar test', body: 'Your local reminders are working.', sound: true },
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 15, repeats: false },
+  });
 }
