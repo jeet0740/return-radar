@@ -293,8 +293,15 @@ function AppContent() {
     try {
       if (!(await Sharing.isAvailableAsync())) { Alert.alert('Sharing unavailable', 'Sharing is not available on this device.'); return; }
       const uri = `${FileSystem.cacheDirectory}returnradar-export-${dateToday()}.json`;
-      const safe = purchases.map(({ notificationIds, ...p }) => p);
-      await FileSystem.writeAsStringAsync(uri, JSON.stringify({ exportedAt: new Date().toISOString(), purchases: safe }, null, 2));
+      const images: Record<string, string> = {};
+      const safe = [];
+      for (const { notificationIds, ...p } of await listPurchases()) {
+        if (p.receiptUri && !images[p.receiptUri]) {
+          images[p.receiptUri] = await FileSystem.readAsStringAsync(p.receiptUri, { encoding: FileSystem.EncodingType.Base64 });
+        }
+        safe.push(p);
+      }
+      await FileSystem.writeAsStringAsync(uri, JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), purchases: safe, images, settings: { themeOption, remindersEnabled, offsets } }));
       await Sharing.shareAsync(uri, { mimeType: 'application/json', dialogTitle: 'Export ReturnRadar data' });
     } catch (error) { Alert.alert('Export failed', String(error)); }
   }
@@ -489,14 +496,18 @@ function AppContent() {
         <Pressable onPress={() => { void exportData(); }} style={{ ...panel, padding: 17, marginBottom: 24, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
           <IconBox name="share-outline" tint={c.brand} background={c.muted}/>
           <View style={{ flex: 1 }}>
-            <Text style={{ color: c.text, fontWeight: '800' }}>Export purchase data</Text>
-            <Text style={{ ...subtitle, marginTop: 4 }}>Share a JSON export of your records</Text>
+            <Text style={{ color: c.text, fontWeight: '800' }}>Create full backup</Text>
+            <Text style={{ ...subtitle, marginTop: 4 }}>Save purchases, receipt images and preferences</Text>
           </View>
           <Ionicons name="chevron-forward" color={c.secondary} size={18}/>
         </Pressable>
         <View style={{ ...panel, padding: 18, marginBottom: 16 }}>
           <Text style={{ color: c.text, fontWeight: '800', marginBottom: 8 }}>Your privacy matters</Text>
           <Text style={{ ...subtitle, lineHeight: 21 }}>Your purchases and receipt photos stay on this device. No login, tracking, or server uploads. Exports are unencrypted; share them carefully. Retail return periods must be verified with each store.</Text>
+        </View>
+        <View style={{ ...panel, padding: 18, marginBottom: 16 }}>
+          <Text style={{ color: c.text, fontWeight: '800', marginBottom: 8 }}>Terms of use</Text>
+          <Text style={{ ...subtitle, lineHeight: 21 }}>ReturnRadar is a personal recordkeeping tool. OCR and suggested deadlines may be inaccurate. Verify retailer policies and warranty terms yourself. Notifications are a convenience and delivery is not guaranteed. Keep independent copies of important receipts.</Text>
         </View>
         <Text style={{ ...subtitle, textAlign: 'center', marginBottom: 22 }}>ReturnRadar v1.0 • Made for mindful shopping</Text>
       </View>
