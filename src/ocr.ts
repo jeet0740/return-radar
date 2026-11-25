@@ -71,7 +71,7 @@ function extractStore(lines: string[]): string {
     ['TJ MAXX', /\bt\.?j\.?\s*maxx\b/i], ['STARBUCKS', /\bstarbucks\b/i],
   ] as const;
   for (const [name, pattern] of brands) {
-    if (header.some(line => pattern.test(line))) return name;
+    if (header.some(line => pattern.test(line)) || lines.some(line => pattern.test(line) && /thank|shopping|welcome/i.test(line))) return name;
   }
   const candidate = header.find(line =>
     line.length >= 3 && line.length <= 45 &&
@@ -81,13 +81,13 @@ function extractStore(lines: string[]): string {
     !/\b(st|street|ave|avenue|road|rd|blvd|highway|hwy|drive|dr|suite|zip)\b/i.test(line) &&
     !/\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b/i.test(line) &&
     !/\(\d{3}\)\s*\d{3}/.test(line) &&
-    !/https?:|www\.|@/.test(line)
+    !/https?:|www\.|@|\b[\w-]+\.(?:com|net|org|io|dev)\b|[\\/]/i.test(line)
   );
   return candidate ?? '';
 }
 
 export function parseReceiptText(rawText: string): ReceiptScan {
-  const lines = rawText.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const lines = rawText.split(/\r?\n/).map(x => x.trim()).filter(x => x && !/\b[\w-]+\.(?:com|net|org|io|dev)\b|https?:\/\/|^share$|^open$|^download$/i.test(x));
   const items: ReceiptItem[] = [];
   const excluded = /\b(total|subtotal|tax|visa|mastercard|cash|change|discount|saved|savings|balance|payment|debit|credit|auth|date|time|register|transaction|store|receipt|points|earnings|return|exchange)\b/i;
   const metadata = /^(?:qty|quantity|sku|upc|item\s*(?:#|no\.?))\b|^\d{2,}(?:[- ]\d+)+/i;
