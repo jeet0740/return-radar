@@ -7,14 +7,14 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { listPurchases, removePurchase, savePurchase, setNotificationIds } from './src/database';
 import { cancelReminders, scheduleReminders, ensureNotificationPermission } from './src/reminders';
 import { acquireReceipt, deleteReceipt, ReceiptSource } from './src/receipt';
-import { scanReceipt } from './src/ocr';
+import { scanReceipt, ReceiptItem } from './src/ocr';
 import { Purchase, PurchaseInput, PurchaseStatus } from './src/types';
 import { addDays, dateToday, daysUntil, deadlineLabel, displayDate, money, parseDate, purchaseUrgency } from './src/utils';
 
@@ -89,6 +89,11 @@ function Field({ label, value, onChangeText, placeholder, c, keyboardType = 'def
   </View>;
 }
 function AppContent() {
+  const insets = useSafeAreaInsets();
+  const [items, setItems] = useState<ReceiptItem[]>([]);
+  const [viewer, setViewer] = useState(false);
+  const [calendar, setCalendar] = useState<'purchaseDate' | 'returnDeadline' | 'warrantyDeadline' | null>(null);
+  const [month, setMonth] = useState(new Date());
   const system = Appearance.getColorScheme();
   const [themeOption, setThemeOption] = useState<ThemeOption>('system');
   const dark = themeOption === 'dark' || (themeOption === 'system' && system === 'dark');
@@ -143,8 +148,8 @@ function AppContent() {
     {typeof count === 'number' ? <Text style={subtitle}>{count} items</Text> : null}
   </View>;
 
-  function openAdd() { setEditing(null); setForm(blank()); setScanMessage(''); setModal(true); }
-  function openEdit(p: Purchase) { setDetail(null); setEditing(p); setForm(toForm(p)); setScanMessage(''); setModal(true); }
+  function openAdd() { setItems([]); setCalendar(null); setEditing(null); setForm(blank()); setScanMessage(''); setModal(true); }
+  function openEdit(p: Purchase) { setItems([]); setCalendar(null); setViewer(false); setDetail(null); setEditing(p); setForm(toForm(p)); setScanMessage(''); setModal(true); }
   function changeForm<K extends keyof Form>(key: K, value: Form[K]) {
     setForm(prev => {
       const next = { ...prev, [key]: value };
@@ -165,14 +170,15 @@ function AppContent() {
       setForm(prev => ({ ...prev, receiptUri: uri }));
       try {
         const result = await scanReceipt(uri);
-        const fields = [result.store && 'store', result.total !== null && 'total', result.date && 'date'].filter(Boolean);
+        setItems(result.items);
+        const fields = [result.store && 'store', result.total !== null && 'total', result.date && 'date', result.items.length && 'products', result.returnDays && 'return window'].filter(Boolean);
         if (fields.length === 0) {
           setScanMessage('Receipt attached. No reliable details detected; enter them manually.');
         } else {
           setScanMessage(`Found ${fields.join(', ')}. Confirm the detected values to fill the form.`);
           Alert.alert(
             'Receipt details found',
-            `Store: ${result.store || 'Not found'}\nTotal: ${result.total !== null ? '$' + result.total.toFixed(2) : 'Not found'}\nDate: ${result.date || 'Not found'}\n\nApply these details to the purchase form?`,
+            `Store: ${result.store || 'Not found'}\nTotal: ${result.total !== null ? '$' + result.total.toFixed(2) : 'Not found'}\nDate: ${result.date || 'Not found'}\n\nProducts: ${result.items.length}\nReturn window: ${result.returnDays ?? 'Not found'} days (verify policy)\n\nApply these details to the purchase form?`,
             [
               { text: 'Keep current fields', style: 'cancel' },
               {
@@ -181,13 +187,16 @@ function AppContent() {
                   setForm(prev => {
                     const next = { ...prev, receiptUri: uri };
                     if (result.store) next.store = result.store;
-                    if (result.total !== null) next.price = result.total.toFixed(2);
-                    if (result.date) {
-                      next.purchaseDate = result.date;
+                    if (result.items.length === 1) { next.title = result.items[0].title; next.price = result.items[0].price.toFixed(2); }
+                    else if (result.items.length > 1) { next.title = ''; next.price = ''; }
+                    else if (result.total !== null) next.price = result.total.toFixed(2);
+                    if (result.returnDays && !prev.customDeadline) next.returnDays = String(result.returnDays);
+                    if (result.date) next.purchaseDate = result.date;
+                    if (result.date || result.returnDays) {
                       if (!prev.customDeadline) {
-                        const days = Number(prev.returnDays);
+                        const days = Number(next.returnDays);
                         if (Number.isInteger(days) && days >= 0 && days <= 3650) {
-                          next.returnDeadline = addDays(result.date, days);
+                          next.returnDeadline = addDays(next.purchaseDate, days);
                         }
                       }
                     }
@@ -303,7 +312,7 @@ function AppContent() {
 
   function purchaseCard(p: Purchase) {
     const urgency = purchaseUrgency(p);
-    return <Pressable key={p.id} onPress={() => setDetail(p)} style={{ ...panel, flexDirection: 'row', alignItems: 'center', padding: 14, marginBottom: 10 }}>
+    return <Pressable key={p.id} onPress={() => { setViewer(false); setDetail(p); }} style={{ ...panel, flexDirection: 'row', alignItems: 'center', padding: 14, marginBottom: 10 }}>
       <IconBox name="bag-handle-outline" background={dark ? c.muted : '#EEF0FF'} tint={c.brand}/>
       <View style={{ flex: 1, marginLeft: 12, marginRight: 8 }}>
         <Text numberOfLines={1} style={{ color: c.text, fontSize: 15, fontWeight: '800' }}>{p.title}</Text>
@@ -482,7 +491,8 @@ function AppContent() {
             <Text style={{ ...subtitle, marginTop: 6 }}>{p.store} · {money(p.price)}</Text>
             <View style={{ marginTop: 13 }}><Tag text={deadlineLabel(p)} kind={purchaseUrgency(p)} c={c}/></View>
           </View>
-          {p.receiptUri ? <Image source={{ uri: p.receiptUri }} resizeMode="contain" style={{ width: '100%', height: 220, borderRadius: 15, marginBottom: 15, backgroundColor: c.muted }}/>: null}
+          {p.receiptUri ? <Pressable onPress={() => setViewer(!viewer)}><Image source={{ uri: p.receiptUri }} resizeMode="contain" style={{ width: '100%', height: 220, borderRadius: 15, backgroundColor: c.muted }}/><Text style={{ color: c.brand, textAlign: 'center', marginVertical: 10 }}>Tap to enlarge receipt</Text></Pressable> : null}
+          {viewer && p.receiptUri ? <View style={{ ...panel, height: 520, marginBottom: 15 }}><ScrollView maximumZoomScale={5} minimumZoomScale={1} centerContent><Image source={{ uri: p.receiptUri }} resizeMode="contain" style={{ width: '100%', height: 510 }}/></ScrollView>{actionButton('Close enlarged receipt', () => setViewer(false), 'close-outline', true)}</View> : null}
           <View style={{ ...panel, padding: 18, gap: 17, marginBottom: 18 }}>
             {([
               ['Purchase date', displayDate(p.purchaseDate)],
@@ -507,6 +517,26 @@ function AppContent() {
       </SafeAreaView>
     </Modal>;
   }
+  function dateCalendar(key: 'purchaseDate' | 'returnDeadline' | 'warrantyDeadline') {
+    return <View style={{ marginBottom: 12 }}>
+      {actionButton('Choose date', () => { setMonth(parseDate(form[key]) ?? new Date()); setCalendar(calendar === key ? null : key); }, 'calendar-outline', true)}
+      {calendar === key ? <View style={{ ...panel, padding: 12, marginTop: 8 }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Pressable onPress={() => setMonth(new Date(month.getFullYear(), month.getMonth()-1, 1))}><Ionicons name="chevron-back" size={24} color={c.brand}/></Pressable>
+          <Text style={{ color: c.text, fontWeight: '800' }}>{month.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</Text>
+          <Pressable onPress={() => setMonth(new Date(month.getFullYear(), month.getMonth()+1, 1))}><Ionicons name="chevron-forward" size={24} color={c.brand}/></Pressable>
+        </View>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 12 }}>
+          {['S','M','T','W','T','F','S'].map((d,i) => <Text key={'h'+i} style={{ width: '14.28%', textAlign: 'center', color: c.secondary }}>{d}</Text>)}
+          {Array.from({ length: new Date(month.getFullYear(), month.getMonth(), 1).getDay() }, (_,i) => <View key={'b'+i} style={{ width: '14.28%', height: 38 }}/>)}
+          {Array.from({ length: new Date(month.getFullYear(), month.getMonth()+1, 0).getDate() }, (_,i) => {
+            const value = [month.getFullYear(), String(month.getMonth()+1).padStart(2,'0'), String(i+1).padStart(2,'0')].join('-');
+            return <Pressable key={value} onPress={() => { if (key === 'returnDeadline') setForm(prev => ({ ...prev, returnDeadline: value, customDeadline: true })); else changeForm(key, value); setCalendar(null); }} style={{ width: '14.28%', height: 38, alignItems: 'center', justifyContent: 'center', backgroundColor: form[key] === value ? c.muted : 'transparent' }}><Text style={{ color: c.text }}>{i+1}</Text></Pressable>;
+          })}
+        </View>
+      </View> : null}
+    </View>;
+  }
   function formModal() {
     return <Modal visible={modal} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setModal(false)}>
       <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
@@ -523,10 +553,18 @@ function AppContent() {
               {scanning ? <ActivityIndicator style={{ marginTop: 10 }} color={c.brand}/> : null}
               {scanMessage ? <Text style={{ color: c.brand, marginTop: 9, textAlign: 'center', fontSize: 12 }}>{scanMessage}</Text> : null}
             </Pressable>
+            {items.length ? <View style={{ ...panel, padding: 12, marginBottom: 16 }}>
+              <Text style={{ color: c.text, fontWeight: '800', marginBottom: 8 }}>Detected products — choose one</Text>
+              {items.map((item, i) => <Pressable key={i} onPress={() => setForm(prev => ({ ...prev, title: item.title, price: item.price.toFixed(2) }))} style={{ paddingVertical: 12, flexDirection: 'row', gap: 10, borderBottomWidth: 1, borderColor: c.border }}>
+                <Text style={{ color: c.text, flex: 1 }}>{item.title}</Text><Text style={{ color: c.brand }}>{money(item.price)}</Text>
+              </Pressable>)}
+              <Text style={{ ...subtitle, marginTop: 8 }}>Item prices exclude any receipt-level tax. Verify before saving.</Text>
+            </View> : null}
             <Field c={c} label="Product name *" placeholder="e.g. Wireless headphones" value={form.title} onChangeText={v => changeForm('title', v)}/>
             <Field c={c} label="Store *" placeholder="e.g. Best Buy" value={form.store} onChangeText={v => changeForm('store', v)}/>
             <Field c={c} label="Price (USD)" placeholder="0.00" keyboardType="decimal-pad" value={form.price} onChangeText={v => changeForm('price', v)}/>
             <Field c={c} label="Purchase date" placeholder="YYYY-MM-DD" value={form.purchaseDate} onChangeText={v => changeForm('purchaseDate', v)} hint="Use YYYY-MM-DD, e.g. 2026-11-11."/>
+            {dateCalendar('purchaseDate')}
             <Field c={c} label="Store return window (days)" placeholder="30" keyboardType="number-pad" value={form.returnDays} onChangeText={v => {
               setForm(prev => ({
                 ...prev, returnDays: v, customDeadline: false,
@@ -534,7 +572,9 @@ function AppContent() {
               }));
             }} hint="Enter the store's actual policy; holidays and exceptions may apply."/>
             <Field c={c} label="Return deadline" placeholder="YYYY-MM-DD" value={form.returnDeadline} onChangeText={v => setForm(prev => ({ ...prev, returnDeadline: v, customDeadline: true }))} hint="Editable. Confirm this date with the retailer."/>
+            {dateCalendar('returnDeadline')}
             <Field c={c} label="Warranty expiration (optional)" placeholder="YYYY-MM-DD" value={form.warrantyDeadline} onChangeText={v => changeForm('warrantyDeadline', v)}/>
+            {dateCalendar('warrantyDeadline')}
             <Field c={c} label="Notes (optional)" placeholder="Order number, conditions, etc." multiline value={form.notes} onChangeText={v => changeForm('notes', v)}/>
             <View style={{ marginTop: 6 }}>{actionButton(saving ? 'Saving…' : editing ? 'Save changes' : 'Save purchase', () => { void persist(); }, 'checkmark-circle-outline')}</View>
             <Text style={{ ...subtitle, textAlign: 'center', marginTop: 14, lineHeight: 18 }}>Receipt text is recognized on your device. Check the detected store, total and date before saving. Return windows must be verified with the retailer.</Text>
@@ -546,18 +586,18 @@ function AppContent() {
 
   return <View style={{ flex: 1, backgroundColor: c.bg }}>
     <StatusBar style={dark ? 'light' : 'dark'}/>
-    <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right', 'bottom']}>
       {busy ? <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
         <ActivityIndicator size="large" color={c.brand}/>
         <Text style={{ ...subtitle, marginTop: 13 }}>Opening ReturnRadar…</Text>
       </View> : <>
-        <ScrollView key={tab} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 95 }}>
+        <ScrollView key={tab} keyboardShouldPersistTaps="handled" contentInsetAdjustmentBehavior="never" contentContainerStyle={{ paddingTop: 8, paddingBottom: 95 }}>
           {tab === 'home' ? home() : tab === 'purchases' ? purchasesScreen() : tab === 'deadlines' ? deadlinesScreen() : settingsScreen()}
         </ScrollView>
-        {tab !== 'settings' ? <Pressable onPress={openAdd} accessibilityLabel="Add purchase" style={{ position: 'absolute', right: 23, bottom: 90, backgroundColor: c.brand, width: 56, height: 56, borderRadius: 19, alignItems: 'center', justifyContent: 'center', shadowColor: '#1829A3', shadowOpacity: 0.2, shadowRadius: 12, elevation: 6 }}>
+        {tab !== 'settings' ? <Pressable onPress={openAdd} accessibilityLabel="Add purchase" style={{ position: 'absolute', right: 23, bottom: 90 + insets.bottom, backgroundColor: c.brand, width: 56, height: 56, borderRadius: 19, alignItems: 'center', justifyContent: 'center', shadowColor: '#1829A3', shadowOpacity: 0.2, shadowRadius: 12, elevation: 6 }}>
           <Ionicons name="add" size={32} color="#FFFFFF"/>
         </Pressable> : null}
-        <View style={{ flexDirection: 'row', backgroundColor: c.surface, borderTopWidth: 1, borderColor: c.border, paddingTop: 10, paddingBottom: Platform.OS === 'ios' ? 14 : 12 }}>
+        <View style={{ flexDirection: 'row', backgroundColor: c.surface, borderTopWidth: 1, borderColor: c.border, paddingTop: 10, paddingBottom: 8 }}>
           {TABS.map(t => <Pressable key={t.key} accessibilityRole="tab" accessibilityState={{ selected: tab === t.key }} onPress={() => setTab(t.key)} style={{ flex: 1, alignItems: 'center', gap: 5, padding: 5 }}>
             <Ionicons name={tab === t.key ? t.selected : t.icon} size={23} color={tab === t.key ? c.brand : c.secondary}/>
             <Text style={{ fontSize: 10, fontWeight: '800', color: tab === t.key ? c.brand : c.secondary }}>{t.label}</Text>
