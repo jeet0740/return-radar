@@ -12,7 +12,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { listPurchases, removePurchase, savePurchase, setNotificationIds } from './src/database';
-import { cancelReminders, scheduleReminders, ensureNotificationPermission } from './src/reminders';
+import { cancelReminders, scheduleReminders, ensureNotificationPermission, DEFAULT_OFFSETS, testReminder } from './src/reminders';
 import { acquireReceipt, deleteReceipt, ReceiptSource } from './src/receipt';
 import { scanReceipt, ReceiptItem } from './src/ocr';
 import { Purchase, PurchaseInput, PurchaseStatus } from './src/types';
@@ -112,16 +112,19 @@ function AppContent() {
   const [filter, setFilter] = useState<Filter>('all');
   const [search, setSearch] = useState('');
   const [remindersEnabled, setRemindersEnabled] = useState(true);
+  const [offsets, setOffsets] = useState<number[]>(DEFAULT_OFFSETS);
+  const [reminderBusy, setReminderBusy] = useState(false);
 
   const reload = useCallback(async () => setPurchases(await listPurchases()), []);
   useEffect(() => {
     (async () => {
       try {
-        const [items, option, reminderValue] = await Promise.all([
-          listPurchases(), AsyncStorage.getItem('theme'), AsyncStorage.getItem('remindersEnabled'),
+        const [items, option, reminderValue, offsetValue] = await Promise.all([
+          listPurchases(), AsyncStorage.getItem('theme'), AsyncStorage.getItem('remindersEnabled'), AsyncStorage.getItem('reminderOffsets'),
         ]);
         setPurchases(items);
         if (option === 'light' || option === 'dark' || option === 'system') setThemeOption(option);
+        if (offsetValue) { const saved: unknown = JSON.parse(offsetValue); if (Array.isArray(saved)) setOffsets(DEFAULT_OFFSETS.filter(n => saved.includes(n))); }
         if (reminderValue !== null) setRemindersEnabled(reminderValue === 'true');
       } catch (error) { Alert.alert('Unable to load purchases', String(error)); }
       finally { setBusy(false); }
@@ -249,13 +252,13 @@ function AppContent() {
           if (!item) continue;
           const updated = await savePurchase({ ...input, title: item.title, price: item.price });
           setSelected(prev => prev.filter(i => i !== index));
-          try { await setNotificationIds(updated.id, remindersEnabled ? await scheduleReminders(updated) : []); } catch (error) { console.warn('Reminder setup failed', error); }
+          try { await setNotificationIds(updated.id, remindersEnabled ? await scheduleReminders(updated, offsets) : []); } catch (error) { console.warn('Reminder setup failed', error); }
         }
         await reload(); setModal(false); setEditing(null); return;
       }
       const updated = await savePurchase(input, editing ?? undefined);
       if (editing) await cancelReminders(editing.notificationIds);
-      const ids = remindersEnabled ? await scheduleReminders(updated) : [];
+      const ids = remindersEnabled ? await scheduleReminders(updated, offsets) : [];
       await setNotificationIds(updated.id, ids);
       if (editing?.receiptUri && editing.receiptUri !== updated.receiptUri) { if (!(await listPurchases()).some(p => p.receiptUri === editing.receiptUri)) await deleteReceipt(editing.receiptUri); }
       await reload();
@@ -267,7 +270,7 @@ function AppContent() {
     try {
       await cancelReminders(p.notificationIds);
       const updated = await savePurchase({ title: p.title, store: p.store, price: p.price, purchaseDate: p.purchaseDate, returnDeadline: p.returnDeadline, warrantyDeadline: p.warrantyDeadline, notes: p.notes, receiptUri: p.receiptUri, status }, p);
-      const ids = remindersEnabled ? await scheduleReminders(updated) : [];
+      const ids = remindersEnabled ? await scheduleReminders(updated, offsets) : [];
       await setNotificationIds(updated.id, ids);
       await reload(); setDetail(null);
     } catch (error) { Alert.alert('Unable to update', String(error)); }
@@ -298,19 +301,21 @@ function AppContent() {
   async function chooseTheme(option: ThemeOption) {
     setThemeOption(option); await AsyncStorage.setItem('theme', option);
   }
-  async function toggleReminders(value: boolean) {
+  async function toggleReminders(value: boolean, nextOffsets = offsets) {
+    if (reminderBusy) return;
+    setReminderBusy(true);
     try {
       if (value && !(await ensureNotificationPermission())) {
         Alert.alert('Permission needed', 'Enable notifications in your device Settings.'); return;
       }
-      setRemindersEnabled(value); await AsyncStorage.setItem('remindersEnabled', String(value));
+      setRemindersEnabled(value); setOffsets(nextOffsets); await AsyncStorage.setItem('remindersEnabled', String(value)); await AsyncStorage.setItem('reminderOffsets', JSON.stringify(nextOffsets));
       for (const purchase of purchases) {
         await cancelReminders(purchase.notificationIds);
-        const ids = value ? await scheduleReminders(purchase) : [];
+        const ids = value ? await scheduleReminders(purchase, nextOffsets) : [];
         await setNotificationIds(purchase.id, ids);
       }
       await reload();
-    } catch (error) { Alert.alert('Reminder settings error', String(error)); }
+    } catch (error) { Alert.alert('Reminder settings error', String(error)); } finally { setReminderBusy(false); }
   }
 
   const actionButton = (label: string, onPress: () => void, icon: keyof typeof Ionicons.glyphMap = 'add', light = false) =>
@@ -467,10 +472,20 @@ function AppContent() {
           <IconBox name="notifications-outline" tint={c.brand} background={c.muted}/>
           <View style={{ flex: 1 }}>
             <Text style={{ color: c.text, fontWeight: '800' }}>Deadline reminders</Text>
-            <Text style={{ ...subtitle, marginTop: 4 }}>Local notifications before return dates</Text>
+            <Text style={{ ...subtitle, marginTop: 4 }}>Local notifications for returns and warranties</Text>
           </View>
           <Ionicons name={remindersEnabled ? 'toggle' : 'toggle-outline'} color={remindersEnabled ? c.brand : c.secondary} size={36}/>
         </Pressable>
+        <View style={{ ...panel, padding: 17, marginBottom: 12, gap: 10 }}>
+          <Text style={{ color: c.text, fontWeight: '800' }}>Reminder schedule</Text>
+          <Text style={subtitle}>At 9 AM local time, for returns and warranties. Changing these options reschedules existing purchases.</Text>
+          {DEFAULT_OFFSETS.map(n => <Pressable key={n} disabled={reminderBusy} onPress={() => { void toggleReminders(remindersEnabled, offsets.includes(n) ? offsets.filter(x => x !== n) : DEFAULT_OFFSETS.filter(x => x === n || offsets.includes(x))); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 }}>
+            <Ionicons name={offsets.includes(n) ? 'checkbox' : 'square-outline'} size={24} color={c.brand}/>
+            <Text style={{ color: c.text }}>{n === 0 ? 'On deadline day' : n + ' day(s) before'}</Text>
+          </Pressable>)}
+          {actionButton('Test notification (15 seconds)', () => { void testReminder().then(() => Alert.alert('Test scheduled', 'Go to your Home Screen and wait 15 seconds.')).catch(e => Alert.alert('Notification error', String(e))); }, 'notifications-outline', true)}
+          {actionButton('Refresh all reminders', () => { void toggleReminders(remindersEnabled); }, 'refresh-outline', true)}
+        </View>
         <Pressable onPress={() => { void exportData(); }} style={{ ...panel, padding: 17, marginBottom: 24, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
           <IconBox name="share-outline" tint={c.brand} background={c.muted}/>
           <View style={{ flex: 1 }}>
