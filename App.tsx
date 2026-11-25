@@ -91,6 +91,7 @@ function Field({ label, value, onChangeText, placeholder, c, keyboardType = 'def
 function AppContent() {
   const insets = useSafeAreaInsets();
   const [items, setItems] = useState<ReceiptItem[]>([]);
+  const [selected, setSelected] = useState<number[]>([]);
   const [viewer, setViewer] = useState(false);
   const [calendar, setCalendar] = useState<'purchaseDate' | 'returnDeadline' | 'warrantyDeadline' | null>(null);
   const [month, setMonth] = useState(new Date());
@@ -148,8 +149,8 @@ function AppContent() {
     {typeof count === 'number' ? <Text style={subtitle}>{count} items</Text> : null}
   </View>;
 
-  function openAdd() { setItems([]); setCalendar(null); setEditing(null); setForm(blank()); setScanMessage(''); setModal(true); }
-  function openEdit(p: Purchase) { setItems([]); setCalendar(null); setViewer(false); setDetail(null); setEditing(p); setForm(toForm(p)); setScanMessage(''); setModal(true); }
+  function openAdd() { setItems([]); setSelected([]); setCalendar(null); setEditing(null); setForm(blank()); setScanMessage(''); setModal(true); }
+  function openEdit(p: Purchase) { setItems([]); setSelected([]); setCalendar(null); setViewer(false); setDetail(null); setEditing(p); setForm(toForm(p)); setScanMessage(''); setModal(true); }
   function changeForm<K extends keyof Form>(key: K, value: Form[K]) {
     setForm(prev => {
       const next = { ...prev, [key]: value };
@@ -170,7 +171,7 @@ function AppContent() {
       setForm(prev => ({ ...prev, receiptUri: uri }));
       try {
         const result = await scanReceipt(uri);
-        setItems(result.items);
+        setItems(result.items); setSelected([]);
         const fields = [result.store && 'store', result.total !== null && 'total', result.date && 'date', result.items.length && 'products', result.returnDays && 'return window'].filter(Boolean);
         if (fields.length === 0) {
           setScanMessage('Receipt attached. No reliable details detected; enter them manually.');
@@ -223,8 +224,9 @@ function AppContent() {
     ]);
   }
   async function persist() {
-    if (saving) return;
-    if (!form.title.trim() || !form.store.trim()) { Alert.alert('Missing details', 'Enter a product and store name.'); return; }
+    if (saving || scanning) return;
+    const batch = !editing && selected.length > 1;
+    if ((!batch && !form.title.trim()) || !form.store.trim()) { Alert.alert('Missing details', 'Enter a product and store name.'); return; }
     if (!parseDate(form.purchaseDate)) { Alert.alert('Invalid date', 'Purchase date must be YYYY-MM-DD.'); return; }
     if (form.returnDeadline && (!parseDate(form.returnDeadline) || form.returnDeadline < form.purchaseDate)) {
       Alert.alert('Invalid return date', 'Enter a valid YYYY-MM-DD return date on or after purchase.'); return;
@@ -241,11 +243,21 @@ function AppContent() {
         returnDeadline: form.returnDeadline, warrantyDeadline: form.warrantyDeadline,
         notes: form.notes.trim(), receiptUri: form.receiptUri, status: form.status,
       };
+      if (batch) {
+        for (const index of selected) {
+          const item = items[index];
+          if (!item) continue;
+          const updated = await savePurchase({ ...input, title: item.title, price: item.price });
+          setSelected(prev => prev.filter(i => i !== index));
+          try { await setNotificationIds(updated.id, remindersEnabled ? await scheduleReminders(updated) : []); } catch (error) { console.warn('Reminder setup failed', error); }
+        }
+        await reload(); setModal(false); setEditing(null); return;
+      }
       const updated = await savePurchase(input, editing ?? undefined);
       if (editing) await cancelReminders(editing.notificationIds);
       const ids = remindersEnabled ? await scheduleReminders(updated) : [];
       await setNotificationIds(updated.id, ids);
-      if (editing?.receiptUri && editing.receiptUri !== updated.receiptUri) await deleteReceipt(editing.receiptUri);
+      if (editing?.receiptUri && editing.receiptUri !== updated.receiptUri) { if (!(await listPurchases()).some(p => p.receiptUri === editing.receiptUri)) await deleteReceipt(editing.receiptUri); }
       await reload();
       setModal(false); setEditing(null);
     } catch (error) { Alert.alert('Could not save', String(error)); }
@@ -267,7 +279,7 @@ function AppContent() {
           try {
             await cancelReminders(p.notificationIds);
             await removePurchase(p.id);
-            await deleteReceipt(p.receiptUri);
+            if (!(await listPurchases()).some(other => other.receiptUri === p.receiptUri)) await deleteReceipt(p.receiptUri);
             setDetail(null); await reload();
           } catch (error) { Alert.alert('Unable to delete', String(error)); }
         }
@@ -554,15 +566,16 @@ function AppContent() {
               {scanMessage ? <Text style={{ color: c.brand, marginTop: 9, textAlign: 'center', fontSize: 12 }}>{scanMessage}</Text> : null}
             </Pressable>
             {items.length ? <View style={{ ...panel, padding: 12, marginBottom: 16 }}>
-              <Text style={{ color: c.text, fontWeight: '800', marginBottom: 8 }}>Detected products — choose one</Text>
-              {items.map((item, i) => <Pressable key={i} onPress={() => setForm(prev => ({ ...prev, title: item.title, price: item.price.toFixed(2) }))} style={{ paddingVertical: 12, flexDirection: 'row', gap: 10, borderBottomWidth: 1, borderColor: c.border }}>
-                <Text style={{ color: c.text, flex: 1 }}>{item.title}</Text><Text style={{ color: c.brand }}>{money(item.price)}</Text>
+              <Text style={{ color: c.text, fontWeight: '800', marginBottom: 8 }}>Detected products — select items</Text>
+              {!editing ? <Pressable onPress={() => { const all = selected.length === items.length ? [] : items.map((_, i) => i); setSelected(all); if (all.length === 1) setForm(prev => ({ ...prev, title: items[0].title, price: items[0].price.toFixed(2) })); }}><Text style={{ color: c.brand, paddingVertical: 10 }}>{selected.length === items.length ? 'Clear selection' : 'Select all'}</Text></Pressable> : null}
+              {items.map((item, i) => <Pressable key={i} onPress={() => { const next = editing ? [i] : selected.includes(i) ? selected.filter(x => x !== i) : [...selected, i]; setSelected(next); if (next.length === 1) setForm(prev => ({ ...prev, title: items[next[0]].title, price: items[next[0]].price.toFixed(2) })); }} style={{ paddingVertical: 12, flexDirection: 'row', gap: 10, borderBottomWidth: 1, borderColor: c.border }}>
+                <Ionicons name={selected.includes(i) ? 'checkbox' : 'square-outline'} size={22} color={c.brand}/><Text style={{ color: c.text, flex: 1 }}>{item.title}</Text><Text style={{ color: c.brand }}>{money(item.price)}</Text>
               </Pressable>)}
               <Text style={{ ...subtitle, marginTop: 8 }}>Item prices exclude any receipt-level tax. Verify before saving.</Text>
             </View> : null}
-            <Field c={c} label="Product name *" placeholder="e.g. Wireless headphones" value={form.title} onChangeText={v => changeForm('title', v)}/>
+            {selected.length > 1 && !editing ? <Text style={{ color: c.brand, marginBottom: 12 }}>{selected.length} products selected · {money(selected.reduce((sum,i) => sum + items[i].price, 0))}. Dates and notes apply to all selected products.</Text> : <Field c={c} label="Product name *" placeholder="e.g. Wireless headphones" value={form.title} onChangeText={v => changeForm('title', v)}/> }
             <Field c={c} label="Store *" placeholder="e.g. Best Buy" value={form.store} onChangeText={v => changeForm('store', v)}/>
-            <Field c={c} label="Price (USD)" placeholder="0.00" keyboardType="decimal-pad" value={form.price} onChangeText={v => changeForm('price', v)}/>
+            {selected.length > 1 && !editing ? null : <Field c={c} label="Price (USD)" placeholder="0.00" keyboardType="decimal-pad" value={form.price} onChangeText={v => changeForm('price', v)}/> }
             <Field c={c} label="Purchase date" placeholder="YYYY-MM-DD" value={form.purchaseDate} onChangeText={v => changeForm('purchaseDate', v)} hint="Use YYYY-MM-DD, e.g. 2026-11-11."/>
             {dateCalendar('purchaseDate')}
             <Field c={c} label="Store return window (days)" placeholder="30" keyboardType="number-pad" value={form.returnDays} onChangeText={v => {
@@ -576,7 +589,7 @@ function AppContent() {
             <Field c={c} label="Warranty expiration (optional)" placeholder="YYYY-MM-DD" value={form.warrantyDeadline} onChangeText={v => changeForm('warrantyDeadline', v)}/>
             {dateCalendar('warrantyDeadline')}
             <Field c={c} label="Notes (optional)" placeholder="Order number, conditions, etc." multiline value={form.notes} onChangeText={v => changeForm('notes', v)}/>
-            <View style={{ marginTop: 6 }}>{actionButton(saving ? 'Saving…' : editing ? 'Save changes' : 'Save purchase', () => { void persist(); }, 'checkmark-circle-outline')}</View>
+            <View style={{ marginTop: 6 }}>{actionButton(saving ? 'Saving…' : editing ? 'Save changes' : selected.length > 1 ? `Save ${selected.length} purchases` : 'Save purchase', () => { void persist(); }, 'checkmark-circle-outline')}</View>
             <Text style={{ ...subtitle, textAlign: 'center', marginTop: 14, lineHeight: 18 }}>Receipt text is recognized on your device. Check the detected store, total and date before saving. Return windows must be verified with the retailer.</Text>
           </ScrollView>
         </KeyboardAvoidingView>
