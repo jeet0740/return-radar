@@ -1,7 +1,8 @@
 import { recognizeText } from 'expo-ocr-kit';
 import { parseDate } from './utils';
 
-export type ReceiptScan = { store: string; date: string | null; total: number | null; rawText: string };
+export type ReceiptItem = { title: string; price: number };
+export type ReceiptScan = { items: ReceiptItem[]; returnDays: number | null; store: string; date: string | null; total: number | null; rawText: string };
 
 const MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
@@ -87,7 +88,23 @@ function extractStore(lines: string[]): string {
 
 export function parseReceiptText(rawText: string): ReceiptScan {
   const lines = rawText.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-  return { store: extractStore(lines), date: extractDate(lines), total: extractTotal(lines), rawText };
+  const items: ReceiptItem[] = [];
+  const excluded = /\b(total|subtotal|tax|visa|mastercard|cash|change|discount|saved|savings|balance|payment|debit|credit|auth|date|time|register|transaction|store|receipt|points|earnings|return|exchange)\b/i;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/\bsub\s*total\b/i.test(line)) break;
+    if (excluded.test(line)) continue;
+    const m = line.match(/^(.+?[a-zA-Z].*?)\s+\$?\s*(\d+(?:,\d{3})*\.\d{2})$/);
+    const separate = !m && /^[a-zA-Z].{2,60}$/.test(line) && /^\$\s*\d+(?:,\d{3})*\.\d{2}$/.test(lines[i+1] || '');
+    if (!m && !separate) continue;
+    const title = (m ? m[1] : line).trim();
+    if (/\b[A-Z]{2}\s+\d{5}\b|https?:|www\./i.test(title)) continue;
+    const price = Number((m ? m[2] : lines[++i]).replace(/[$,\s]/g, ''));
+    if (Number.isFinite(price) && price > 0) items.push({ title, price });
+  }
+  const policy = rawText.match(/(?:return[s]?|exchange[s]?)[\s\S]{0,80}?\b(\d{1,3})\s*days\b/i);
+  const days = policy ? Number(policy[1]) : 0;
+  return { items, returnDays: days > 0 && days <= 365 ? days : null, store: extractStore(lines), date: extractDate(lines), total: extractTotal(lines), rawText };
 }
 
 export async function scanReceipt(uri: string): Promise<ReceiptScan> {
