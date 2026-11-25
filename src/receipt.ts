@@ -10,8 +10,9 @@ export async function acquireReceipt(source: ReceiptSource): Promise<string | nu
   if (!permission.granted) throw new Error('Permission denied. Enable photo access in iPhone Settings.');
   const options: ImagePicker.ImagePickerOptions = {
     mediaTypes: ['images'],
-    allowsEditing: false,
-    quality: 0.82,
+    // Let users crop browser chrome and background before recognizing text.
+    allowsEditing: true,
+    quality: 1,
   };
   const result = source === 'camera'
     ? await ImagePicker.launchCameraAsync(options)
