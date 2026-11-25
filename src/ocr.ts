@@ -90,17 +90,27 @@ export function parseReceiptText(rawText: string): ReceiptScan {
   const lines = rawText.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
   const items: ReceiptItem[] = [];
   const excluded = /\b(total|subtotal|tax|visa|mastercard|cash|change|discount|saved|savings|balance|payment|debit|credit|auth|date|time|register|transaction|store|receipt|points|earnings|return|exchange)\b/i;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+  const metadata = /^(?:qty|quantity|sku|upc|item\s*(?:#|no\.?))\b|^\d{2,}(?:[- ]\d+)+/i;
+  const priceOnly = /^\$?\s*(\d+(?:,\d{3})*\.\d{2})$/;
+  let pending = '';
+  for (const line of lines) {
     if (/\bsub\s*total\b/i.test(line)) break;
-    if (excluded.test(line)) continue;
-    const m = line.match(/^(.+?[a-zA-Z].*?)\s+\$?\s*(\d+(?:,\d{3})*\.\d{2})$/);
-    const separate = !m && /^[a-zA-Z].{2,60}$/.test(line) && /^\$\s*\d+(?:,\d{3})*\.\d{2}$/.test(lines[i+1] || '');
-    if (!m && !separate) continue;
-    const title = (m ? m[1] : line).trim();
-    if (/\b[A-Z]{2}\s+\d{5}\b|https?:|www\./i.test(title)) continue;
-    const price = Number((m ? m[2] : lines[++i]).replace(/[$,\s]/g, ''));
-    if (Number.isFinite(price) && price > 0) items.push({ title, price });
+    if (excluded.test(line)) { pending = ''; continue; }
+    const match = line.match(/^(.+?)\s+\$?\s*(\d+(?:,\d{3})*\.\d{2})$/);
+    const standalone = line.match(priceOnly);
+    const label = match ? match[1].trim() : line;
+    const isMetadata = metadata.test(label);
+    const isName = !isMetadata && /^[a-zA-Z]/.test(label) && /[a-zA-Z]{3}/.test(label) && !/\b[A-Z]{2}\s+\d{5}\b|https?:|www\./i.test(label);
+    if (standalone || match) {
+      const title = standalone || isMetadata ? pending : isName ? label : '';
+      const price = Number((standalone ? standalone[1] : match![2]).replace(/,/g, ''));
+      if (Number.isFinite(price) && price > 0) {
+        items.push({ title: title || 'Unidentified product ' + (items.length + 1), price });
+        pending = '';
+      }
+    } else if (isName) {
+      pending = label;
+    }
   }
   const policy = rawText.match(/(?:return[s]?|exchange[s]?)[\s\S]{0,80}?\b(\d{1,3})\s*days\b/i);
   const days = policy ? Number(policy[1]) : 0;
